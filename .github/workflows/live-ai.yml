@@ -1,0 +1,43 @@
+name: Live AI Evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      evaluation_provider:
+        description: Evaluation provider to run
+        type: choice
+        required: true
+        default: deepeval
+        options:
+          - deepeval
+          - ragas
+          - both
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Run live LLM tests
+        run: pytest backend/tests -q -m live_llm
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Run model evaluation
+        run: python -m evaluation.run_evaluation --live --provider "${{ inputs.evaluation_provider }}" --output evaluation/reports/live-evaluation.json
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LANGSMITH_TRACING: ${{ vars.LANGSMITH_TRACING || 'false' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: ${{ vars.LANGSMITH_PROJECT }}
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-evaluation-report
+          path: evaluation/reports/live-evaluation.json
+          if-no-files-found: ignore

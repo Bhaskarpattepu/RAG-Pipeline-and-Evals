@@ -14,6 +14,47 @@ from app.models.support_ticket import SupportTicket
 
 class ApprovalService:
     @staticmethod
+    def create_ticket_request(
+        session: Session,
+        *,
+        tenant_id: str,
+        user_id: str,
+        customer_id: str,
+        order_id: str | None,
+        description: str,
+    ) -> ApprovalRequest:
+        target_id = order_id or customer_id
+        existing = (
+            session.query(ApprovalRequest)
+            .filter(
+                ApprovalRequest.tenant_id == tenant_id,
+                ApprovalRequest.action == "create_support_ticket",
+                ApprovalRequest.target_id == target_id,
+                ApprovalRequest.status == "pending",
+            )
+            .order_by(ApprovalRequest.created_at.desc())
+            .first()
+        )
+        if existing is not None:
+            return existing
+
+        return ApprovalService.create_request(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="create_support_ticket",
+            target_type="support_ticket",
+            target_id=target_id,
+            reason="Human review is required before creating a support ticket.",
+            payload={
+                "customer_id": customer_id,
+                "order_id": order_id,
+                "subject": "Customer support investigation",
+                "description": description,
+            },
+        )
+
+    @staticmethod
     def create_request(
         session: Session,
         *,

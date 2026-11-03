@@ -10,6 +10,7 @@ from app.models.order import Order
 from app.models.order_item import OrderItem
 from app.models.payment import Payment
 from app.models.product import Product
+from app.models.refund import Refund
 from app.models.user import User
 
 
@@ -106,6 +107,29 @@ class CommerceService:
                 }
                 for payment in payments
             ],
+        }
+
+    @staticmethod
+    def get_refund(db: Session, refund_id: str, tenant_id: str) -> dict[str, Any] | None:
+        refund = (
+            db.query(Refund, Order)
+            .join(Order, Order.id == Refund.order_id)
+            .filter(
+                Refund.id == refund_id,
+                Refund.tenant_id == tenant_id,
+                Order.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if refund is None:
+            return None
+
+        refund_record, order = refund
+        return {
+            "refund_id": refund_record.id,
+            "order_id": order.order_number,
+            "status": refund_record.status,
+            "amount": float(refund_record.amount),
         }
 
     @staticmethod

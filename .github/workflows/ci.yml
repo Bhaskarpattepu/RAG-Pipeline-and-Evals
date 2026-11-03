@@ -80,6 +80,7 @@ jobs:
         run: python -m pytest backend/tests -q -m live_llm
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RUN_LIVE_LLM_TESTS: "true"
       - name: Run DeepEval and RAGAS evaluation
         if: steps.credentials.outputs.available == 'true'
         run: >-

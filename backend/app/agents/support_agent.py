@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from subprocess import SubprocessError
 from time import perf_counter
 from typing import Any, TypedDict
 from uuid import uuid4
@@ -12,6 +13,8 @@ from mcp.shared.exceptions import MCPError
 from app.observability.langsmith import trace_ai_operation
 from app.services.mcp_client import call_mcp_tool
 from app.services.rag_service import RAGService
+
+MCP_TOOL_TIMEOUT_SECONDS = 15
 
 
 class AgentState(TypedDict):
@@ -27,6 +30,7 @@ class AgentState(TypedDict):
     pending_approval: dict[str, Any] | None
     step_count: int
     errors: list[str]
+    clarification: str | None
     final_answer: str | None
 
 
@@ -164,7 +168,8 @@ class SupportAgent:
 
         order_lookup_requested = bool(
             re.search(
-                r"\b(order status|check (?:the )?order|look up (?:the )?order|investigate (?:the )?order)\b",
+                r"\b(?:order status|(?:check|look up|lookup|investigate|find|track|show) "
+                r"(?:(?:the|my) )?order)\b",
                 lowered,
             )
             or (
@@ -197,8 +202,19 @@ class SupportAgent:
             tools.append("get_product_details")
         elif re.search(r"\b(products|catalog|inventory)\b", lowered):
             tools.append("search_products")
-        if re.search(r"\b(search|find|existing)\b", lowered) and re.search(r"\btickets?\b", lowered):
+        if (
+            self._customer_id(request)
+            and re.search(r"\b(search|find|existing)\b", lowered)
+            and re.search(r"\btickets?\b", lowered)
+        ):
             tools.append("search_support_tickets")
+        elif (
+            re.search(r"\b(search|find|existing)\b", lowered)
+            and re.search(r"\btickets?\b", lowered)
+        ):
+            state["clarification"] = (
+                "Please provide a customer ID so I can search the matching support tickets."
+            )
         if self._policy_requested(request):
             tools.append("retrieve_policy")
 
@@ -218,6 +234,7 @@ class SupportAgent:
                 "reason": "A human approval is required before creating a support ticket.",
                 "parameters": {
                     "customer_id": self._customer_id(request),
+                    "order_id": self._order_id(request),
                     "summary": "Support investigation",
                     "description": request,
                 },
@@ -235,7 +252,10 @@ class SupportAgent:
             if selected_tool in {"get_order_status", "get_payment_status"}:
                 arguments = {"order_id": self._order_id(message), "tenant_id": state["tenant_id"]}
             elif selected_tool == "get_refund_status":
-                arguments = {"refund_id": self._refund_id(message)}
+                arguments = {
+                    "refund_id": self._refund_id(message),
+                    "tenant_id": state["tenant_id"],
+                }
             elif selected_tool in {"get_customer_details", "search_support_tickets"}:
                 arguments = {
                     "customer_id": self._customer_id(message),
@@ -259,16 +279,15 @@ class SupportAgent:
                 tenant_id=state["tenant_id"],
             ) as trace_run:
                 try:
-                    result = asyncio.run(call_mcp_tool(selected_tool, arguments))
-                    latency_ms = int((perf_counter() - started_at) * 1000)
-                    tool_payload = result.get("result", {})
-                    tool_error = bool(
-                        tool_payload.get("is_error")
-                        or (
-                            isinstance(tool_payload.get("structured_content"), dict)
-                            and tool_payload["structured_content"].get("error")
+                    result = asyncio.run(
+                        asyncio.wait_for(
+                            call_mcp_tool(selected_tool, arguments),
+                            timeout=MCP_TOOL_TIMEOUT_SECONDS,
                         )
                     )
+                    latency_ms = int((perf_counter() - started_at) * 1000)
+                    tool_response = result.get("result") if isinstance(result, dict) else None
+                    tool_error = self._tool_response_has_error(tool_response)
                     event.update(
                         {
                             "status": "failed" if tool_error else "completed",
@@ -277,8 +296,17 @@ class SupportAgent:
                     )
                     if tool_error:
                         state["errors"].append(f"{selected_tool}: tool reported an error")
+                        safe_tool_response: Any = {
+                            "error": "Tool failed or returned an error."
+                        }
+                    else:
+                        safe_tool_response = tool_response
                     state["tool_results"].append(
-                        {"tool": selected_tool, "result": result.get("result"), "latency_ms": latency_ms}
+                        {
+                            "tool": selected_tool,
+                            "result": safe_tool_response,
+                            "latency_ms": latency_ms,
+                        }
                     )
                     if trace_run is not None:
                         trace_run.outputs = {
@@ -291,16 +319,27 @@ class SupportAgent:
                     RuntimeError,
                     ValueError,
                     TimeoutError,
-                    asyncio.SubprocessError,
+                    SubprocessError,
                     ExceptionGroup,
+                    TypeError,
+                    AttributeError,
+                    KeyError,
                 ) as exc:
                     latency_ms = int((perf_counter() - started_at) * 1000)
-                    event.update({"status": "failed", "latency_ms": latency_ms, "error": str(exc)})
-                    state["errors"].append(f"{selected_tool}: {exc}")
+                    event.update(
+                        {
+                            "status": "failed",
+                            "latency_ms": latency_ms,
+                            "error": type(exc).__name__,
+                        }
+                    )
+                    state["errors"].append(
+                        f"{selected_tool}: execution failed ({type(exc).__name__})"
+                    )
                     state["tool_results"].append(
                         {
                             "tool": selected_tool,
-                            "result": {"error": str(exc)},
+                            "result": {"error": "Tool execution failed."},
                             "latency_ms": latency_ms,
                         }
                     )
@@ -318,6 +357,25 @@ class SupportAgent:
             )
         return state
 
+    @staticmethod
+    def _tool_response_has_error(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return True
+
+        if response.get("is_error", response.get("isError", False)):
+            return True
+
+        structured_content = response.get("structured_content")
+        if isinstance(structured_content, dict) and structured_content.get("error"):
+            return True
+
+        if isinstance(structured_content, list) and any(
+            isinstance(item, dict) and item.get("error") for item in structured_content
+        ):
+            return True
+
+        return bool(response.get("error"))
+
     def finalize_response(self, state: AgentState) -> AgentState:
         policy_text = "\n".join(doc.get("content", "") for doc in state["retrieved_documents"])
         tool_summary = "\n".join(
@@ -328,6 +386,13 @@ class SupportAgent:
             summary = (
                 "Approval required before creating a support ticket. No ticket was created. "
                 f"Policy context: {policy_text[:300]}\n{tool_summary}"
+            )
+        elif state["clarification"]:
+            summary = state["clarification"]
+        elif state["errors"]:
+            summary = (
+                "I could not complete one or more requested tool lookups. Please try again later.\n"
+                f"{tool_summary}"
             )
         else:
             summary = (
@@ -355,6 +420,7 @@ class SupportAgent:
             "pending_approval": None,
             "step_count": 0,
             "errors": [],
+            "clarification": None,
             "final_answer": None,
         }
         with trace_ai_operation(

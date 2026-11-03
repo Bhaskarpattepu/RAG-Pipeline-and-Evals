@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.models.approval import ApprovalRequest
+from app.models.customer import Customer
 from app.schemas.chat import ChatRequest, ChatResponse, ChatSource
 from app.services.approval_service import ApprovalService
 from app.services.commerce_service import CommerceService
@@ -29,6 +29,7 @@ def _create_ticket_approval(
     if not is_ticket_request:
         return None
 
+    requested_customer_id = customer_id
     verified_customer_id = customer_id
     order_id = None
     if order_data:
@@ -37,32 +38,31 @@ def _create_ticket_approval(
     if not verified_customer_id:
         return None
 
-    target_id = order_id or verified_customer_id
-    existing = (
-        db.query(ApprovalRequest)
+    customer = (
+        db.query(Customer)
         .filter(
-            ApprovalRequest.tenant_id == tenant_id,
-            ApprovalRequest.action == "create_support_ticket",
-            ApprovalRequest.target_id == target_id,
-            ApprovalRequest.status == "pending",
+            Customer.tenant_id == tenant_id,
+            (Customer.id == verified_customer_id)
+            | (Customer.customer_code == verified_customer_id),
         )
-        .order_by(ApprovalRequest.created_at.desc())
         .first()
     )
-    approval = existing or ApprovalService.create_request(
+    if customer is None:
+        return None
+
+    if order_data and requested_customer_id and requested_customer_id not in {
+        customer.id,
+        customer.customer_code,
+    }:
+        return None
+
+    approval = ApprovalService.create_ticket_request(
         db,
         tenant_id=tenant_id,
         user_id="support-agent",
-        action="create_support_ticket",
-        target_type="support_ticket",
-        target_id=target_id,
-        reason="Human review is required before creating a support ticket.",
-        payload={
-            "customer_id": verified_customer_id,
-            "order_id": order_id,
-            "subject": "Customer support investigation",
-            "description": message,
-        },
+        customer_id=customer.id,
+        order_id=order_id,
+        description=message,
     )
     return {
         "id": approval.id,

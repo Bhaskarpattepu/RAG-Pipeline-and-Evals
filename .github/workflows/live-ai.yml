@@ -27,6 +27,7 @@ jobs:
         run: pytest backend/tests -q -m live_llm
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RUN_LIVE_LLM_TESTS: "true"
       - name: Run model evaluation
         run: python -m evaluation.run_evaluation --live --provider "${{ inputs.evaluation_provider }}" --output evaluation/reports/live-evaluation.json
         env:

@@ -9,6 +9,8 @@ from app.services.llm_service import LLMService
 
 @pytest.mark.live_llm
 def test_chat_live_llm() -> None:
+    if os.getenv("RUN_LIVE_LLM_TESTS", "").lower() != "true":
+        pytest.skip("Set RUN_LIVE_LLM_TESTS=true to opt in to billable live LLM tests")
     if not os.getenv("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY required for live LLM tests")
 

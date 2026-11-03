@@ -7,6 +7,7 @@ from app.models.order import Order
 from app.models.order_item import OrderItem
 from app.models.payment import Payment
 from app.models.product import Product
+from app.models.refund import Refund
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -90,6 +91,17 @@ def seed_demo_data(db: Session) -> None:
                 amount=product.price,
                 status="failed",
                 provider="demo",
+            )
+        )
+
+    if db.query(Refund).filter(Refund.id == "REF-1005").first() is None:
+        db.add(
+            Refund(
+                id="REF-1005",
+                tenant_id=DEMO_TENANT_ID,
+                order_id=order.id,
+                amount=product.price,
+                status="pending_review",
             )
         )
 

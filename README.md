@@ -5,6 +5,19 @@
 > evaluation. It does not yet provide the security, operations, or data controls needed for
 > public deployment or real customer data. See [Known gaps and improvement plan](#known-gaps-and-improvement-plan).
 
+To run locally:
+$localDb = Join-Path $env:TEMP "enterprise-ai-support-local.db"
+$env:DATABASE_URL = "sqlite:///" + $localDb.Replace('\', '/')
+$env:USE_SQLITE_FALLBACK = "0"
+$env:PYTHONPATH = Join-Path $PWD "backend"
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+next command to run frontend:
+cd "C:\Users\Bhask\Downloads\AI Support Engineer\frontend"
+npm ci
+npm run dev -- --host 127.0.0.1
+
+
 ## What is in the repository
 
 - React/Vite dashboard in [`frontend/`](frontend/)
@@ -15,7 +28,7 @@
 - GitHub Actions workflows in [`.github/workflows/`](.github/workflows/)
 
 The backend uses SQLAlchemy models for demo tenants, customers, users, products, orders,
-payments, refunds, tickets, and approval requests. OpenAI is used for generated chat responses and
+payments, tickets, and approval requests. OpenAI is used for generated chat responses and
 embeddings when configured. LangSmith tracing is optional.
 
 ## Project workflows
